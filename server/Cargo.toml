@@ -6,10 +6,7 @@ edition = "2021"
 [profile.release]
 opt-level = 3
 lto = true
-
-[build]
-rustflags = ["-C", "target-cpu=native"]
-
+incremental = true
 
 [dependencies]
 axum = { version = "0.6.9", features = ["ws"] }

@@ -696,6 +696,7 @@ dependencies = [
  "axum",
  "axum-macros",
  "serde",
+ "serde_json",
  "sysinfo",
  "tokio",
 ]

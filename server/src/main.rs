@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::{Arc, Mutex};
 use sysinfo::{CpuExt, System, SystemExt};
-
+use tokio::sync::broadcast;
 const DEFAULT_PORT: u16 = 7070;
 
 trait HumanReadable: Sized {
@@ -58,7 +58,14 @@ fn router(app_state: AppState) -> Router {
 
 #[tokio::main]
 async fn main() {
-    let app_state = AppState::default();
+    let (tx_cpu, _) = broadcast::channel::<Vec<CpuInfo>>(1);
+    let (tx_memory, _) = broadcast::channel::<Memory>(1);
+    let app_state = AppState {
+        tx_cpu: tx_cpu.clone(),
+        tx_memory: tx_memory.clone(),
+        cpu_info: Arc::new(Mutex::new(vec![])),
+        memory: Arc::new(Mutex::new(Memory::default())),
+    };
     start_cpu_info_task(app_state.clone());
     start_memory_data_collection_task(app_state.clone());
     let server = Server::bind(&get_address().parse().expect("Invalid host given"))
@@ -84,10 +91,7 @@ fn start_cpu_info_task(app_state: AppState) {
                     brand: cpu.brand().to_owned(),
                 })
                 .collect();
-            {
-                let mut cpu_info = app_state.cpu_info.lock().unwrap();
-                *cpu_info = cpus;
-            }
+            app_state.tx_cpu.send(cpus).unwrap_or_default();
             std::thread::sleep(System::MINIMUM_CPU_UPDATE_INTERVAL);
         }
     });
@@ -104,18 +108,16 @@ fn start_memory_data_collection_task(app_state: AppState) {
                 total_swap: sys.total_swap().to_human(None),
                 used_swap: sys.used_swap().to_human(None),
             };
-            {
-                let mut memory = app_state.memory.lock().unwrap();
-                *memory = memory_data;
-            }
-
+            app_state.tx_memory.send(memory_data).unwrap_or_default();
             std::thread::sleep(System::MINIMUM_CPU_UPDATE_INTERVAL);
         }
     });
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 struct AppState {
+    tx_cpu: broadcast::Sender<Vec<CpuInfo>>,
+    tx_memory: broadcast::Sender<Memory>,
     cpu_info: Arc<Mutex<Vec<CpuInfo>>>,
     memory: Arc<Mutex<Memory>>,
 }
@@ -162,10 +164,10 @@ async fn realtime_cpus_get(
 }
 
 async fn realtime_cpu_stream(app_state: AppState, mut ws: WebSocket) {
-    loop {
-        let payload = serde_json::to_string(&*app_state.cpu_info.lock().unwrap()).unwrap();
+    let mut rx = app_state.tx_cpu.subscribe();
+    while let Ok(msg) = rx.recv().await {
+        let payload = serde_json::to_string(&msg).unwrap();
         ws.send(Message::Text(payload)).await.unwrap_or_default();
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 }
 
@@ -178,9 +180,9 @@ async fn realtime_memory_get(
 }
 
 async fn realtime_memory_stream(app_state: AppState, mut ws: WebSocket) {
-    loop {
-        let payload = serde_json::to_string(&*app_state.memory.lock().unwrap()).unwrap();
+    let mut rx = app_state.tx_memory.subscribe();
+    while let Ok(msg) = rx.recv().await {
+        let payload = serde_json::to_string(&msg).unwrap();
         ws.send(Message::Text(payload)).await.unwrap_or_default();
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 }
